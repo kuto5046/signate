@@ -46,8 +46,44 @@ train.drop(train.query("id==7492").index, inplace=True)  # 面積あたりの価
 train.drop(train.query("id==5776").index, inplace=True)
 # train.query("id==5776")["target"] /= 10  # 価格の桁が1つ多い(港区)
 
-# ward_name = ["港", "千代田", "中央", "渋谷", "目黒", "新宿", "文京", "台東", "江東", "品川", "荒川", "墨田", "世田谷", "豊島",
-#              "大田", "中野", "北", "杉並", "練馬", "板橋", "江戸川", "足立", "葛飾"]
+
+# lightGBMのcvメソッドから学習済みモデルを受け取れるように設定
+class ModelExtractionCallback(object):
+    """lightgbm.cv() から学習済みモデルを取り出すためのコールバックに使うクラス
+
+    NOTE: 非公開クラス '_CVBooster' に依存しているため将来的に動かなく恐れがある
+    """
+
+    def __init__(self):
+        self._model = None
+
+    def __call__(self, env):
+        # _CVBooster の参照を保持する
+        self._model = env.model
+
+    def _assert_called_cb(self):
+        if self._model is None:
+            # コールバックが呼ばれていないときは例外にする
+            raise RuntimeError('callback has not called yet')
+
+    @property
+    def boosters_proxy(self):
+        self._assert_called_cb()
+        # Booster へのプロキシオブジェクトを返す
+        return self._model
+
+    @property
+    def raw_boosters(self):
+        self._assert_called_cb()
+        # Booster のリストを返す
+        return self._model.boosters
+
+    @property
+    def best_iteration(self):
+        self._assert_called_cb()
+        # Early stop したときの boosting round を返す
+        return self._model.best_iteration
+
 
 """
 特徴量の整理
@@ -59,17 +95,53 @@ train.drop(train.query("id==5776").index, inplace=True)
 def place_feature(df):
     place = df["Place"].str.replace("東京都", "").str.split("区")
     place = pd.DataFrame(place.str, index=["Place", "Place2"]).T
-    # place = pd.DataFrame(place[0])
+    place.drop("Place2", axis=1, inplace=True)
+    # place = place["Place"].str.replace("港", "0")
+    # place = place.str.replace("千代田", "1")
+    # place = place.str.replace("中央", "2")
+    # place = place.str.replace("渋谷", "3")
+    # place = place.str.replace("目黒", "4")
+
+    # place = place.str.replace("新宿", "5")
+    # place = place.str.replace("文京", "6")
+    # place = place.str.replace("台東", "7")
+    # place = place.str.replace("江東", "8")
+    # place = place.str.replace("品川", "9")
+
+    # place = place.str.replace("荒川", "10")
+    # place = place.str.replace("墨田", "11")
+    # place = place.str.replace("世田谷", "12")
+    # place = place.str.replace("豊島", "13")
+    # place = place.str.replace("大田", "14")
+
+    # place = place.str.replace("中野", "15")
+    # place = place.str.replace("北", "16")
+    # place = place.str.replace("杉並", "17")
+    # place = place.str.replace("練馬", "18")
+    # place = place.str.replace("板橋", "19")
+
+    # place = place.str.replace("江戸川", "20")
+    # place = place.str.replace("足立", "21")
+    # place = place.str.replace("葛飾", "22")
+    # place = pd.DataFrame(place).astype(int)
     # place.columns = ["Place"]
-    return place["Place"]
+
+    # frequency encording(区名の出現頻度を特徴量とする)
+    freq = place["Place"].value_counts()
+    place["Freq_place"] = place["Place"].map(freq)
+    return place
 
 
 # 間取り
 def room_feature(df):
     room = pd.DataFrame(df["Room"].str[0]).astype(int)  # strの１文字目（部屋数）を取得
     room.columns = ["N_room"]
-    # temp_room = df["Room"].str[1:]
-    return room
+    temp_room = df["Room"].str[1:].replace("R", "")
+    room["L_room"] = temp_room.str.contains("L")
+    room["D_room"] = temp_room.str.contains("D")
+    room["K_room"] = temp_room.str.contains("K")
+    room["S_room"] = temp_room.str.contains("S")
+    return room * 1
 
 
 def floor_feature(df):
@@ -105,7 +177,7 @@ def angle_feature(df):
     angle = angle.str.replace("西", "2")
     angle = angle.str.replace("東", "2")
     angle = angle.str.replace("南", "4")
-    # angle = pd.DataFrame(angle.fillna("2"), columns=["Angle"]).astype(int)
+    angle = pd.DataFrame(angle.fillna("2"), columns=["Angle"]).astype(int)
     return angle
 
 
@@ -191,9 +263,11 @@ def _feature_importance(model, X):
 
 def main():
     X, y, X_test = data_organize(train, test)
-    X_train, X_val, y_train, y_val = train_test_split(X, y, shuffle=True, random_state=0)
-    train_data = lgb.Dataset(X_train, y_train)
-    val_data = lgb.Dataset(X_val, y_val)
+    # X_train, X_val, y_train, y_val = train_test_split(X, y, shuffle=True, random_state=0)
+    # train_data = lgb.Dataset(X_train, y_train)
+    # val_data = lgb.Dataset(X_val, y_val)
+    train_data = lgb.Dataset(X, y)
+
     params = {
         'objective': 'regression',
         'metric': 'rmse',
@@ -209,22 +283,34 @@ def main():
         'seed': 0,
     }
 
-    model = lgb.train(params, train_data, valid_sets=[train_data, val_data],
-                    num_boost_round=5000, early_stopping_rounds=200,
-                    verbose_eval=200)
+    # 学習済みモデルを取り出すためのコールバックを用意する
+    extraction_cb = ModelExtractionCallback()
+    callbacks = [
+        extraction_cb,
+    ]
 
-    _feature_importance(model, X)
+    lgb.cv(params, train_data, num_boost_round=5000, nfold=5, early_stopping_rounds=200, 
+                   verbose_eval=200, callbacks=callbacks, eval_train_metric=True)
 
-    y_train_pred = model.predict(X_train)
-    y_val_pred = model.predict(X_val)
-    train_score = np.sqrt(mean_squared_error(y_train, y_train_pred))
-    val_score = np.sqrt(mean_squared_error(y_val, y_val_pred))
+    # コールバックのオブジェクトから学習済みモデルを取り出す
+    proxy = extraction_cb.boosters_proxy
+    # boosters = extraction_cb.raw_boosters
+    best_iteration = extraction_cb.best_iteration
+    print(proxy)
+    # _feature_importance(proxy, X)
 
-    print('train_RMSE:', train_score)
-    print('val_RMSE:', val_score)
+    # 各モデルの推論結果を Averaging する場合
+    y_pred_proba_list = proxy.predict(X_test, num_iteration=best_iteration)
+    y_pred = np.array(y_pred_proba_list).mean(axis=0)
+    # y_pred = np.zeros(X_test.shape[0], dtype='float32')
+    # y_pred = np.argmax(y_pred_proba_avg, axis=1)
 
-    y_pred = np.zeros(X_test.shape[0], dtype='float32')
-    y_pred = model.predict(X_test)
+    # y_val_pred = model.predict(X_val)
+    # train_score = np.sqrt(mean_squared_error(y_train, y_train_pred))
+    # val_score = np.sqrt(mean_squared_error(y_val, y_val_pred))
+
+   
+    # y_pred = model.predict(X_test)
     submit['target'] = y_pred
     submit.to_csv('./output/submit{}.csv'.format(date), header=False, index=False)
 
