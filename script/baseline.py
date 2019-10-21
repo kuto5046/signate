@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import lightgbm as lgb
 from sklearn.metrics import mean_squared_error, roc_auc_score
 from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 from sklearn.ensemble import RandomForestRegressor
 import os
 
@@ -238,7 +238,7 @@ def data_organize(train, test):
     test_df = feature_concat(test, data="test")
 
     # カテゴリ変数 for label encording
-    le_columns = ["Place", "Material"]
+    le_columns = ["Place", "Material", "Angle"]
     for c in le_columns:
         le = LabelEncoder()
         le.fit(train_df[c])
@@ -260,14 +260,37 @@ def _feature_importance(model, X):
     sns.barplot(data=feature_importances.head(50), x='importance', y='feature')
     plt.show()
 
+def target_encoding(X, y, tr_idx, va_idx):
+    # 学習データからバリデーションデータを分ける
+    tr_x, va_x = X.iloc[tr_idx].copy(), X.iloc[va_idx].copy()
+    tr_y, va_y = y.iloc[tr_idx], y.iloc[va_idx]
+
+    # trainデータを用いて,valデータをtarget encoding
+    le_columns = ["Place"]
+    for c in le_columns:
+        # 学習データ全体で各カテゴリにおけるtargetの平均を計算
+        data_tmp = pd.DataFrame({c: tr_x[c], "target": tr_y})
+        target_mean = data_tmp.groupby(c)["target"].mean()
+        va_x.loc[:, c] = va_x[c].map(target_mean)
+
+        # trainデータの変換後の値を格納する配列を準備
+        tmp = np.repeat(np.nan, tr_x.shape[0])
+        kf_encoding = KFold(n_splits=5, shuffle=True, random_state=0) 
+        
+        # trainデータを用いて,残りのtrainデータをtarget encoding
+        for idx_1, idx_2 in kf_encoding.split(tr_x):
+            # out-of-foldで各カテゴリにおける目的変数の平均を計算
+            target_mean = data_tmp.iloc[idx_1].groupby(c)["target"].mean()
+            # 変換後の値を一時配列に格納
+            tmp[idx_2] = tr_x[c].iloc[idx_2].map(target_mean)
+        
+        tr_x.loc[:, c] = tmp
+    return tr_x, tr_y, va_x, va_y
+
 
 def main():
     X, y, X_test = data_organize(train, test)
-    # X_train, X_val, y_train, y_val = train_test_split(X, y, shuffle=True, random_state=0)
-    # train_data = lgb.Dataset(X_train, y_train)
-    # val_data = lgb.Dataset(X_val, y_val)
-    train_data = lgb.Dataset(X, y)
-
+    kf = KFold(n_splits=5, shuffle=True, random_state=0)
     params = {
         'objective': 'regression',
         'metric': 'rmse',
@@ -279,41 +302,60 @@ def main():
         # 'subsample': 0.8,
         # 'nthread': -1,
         # 'bagging_freq': 1,
-        'verbose': -1,
+        'verbose': 0,
         'seed': 0,
     }
 
-    # 学習済みモデルを取り出すためのコールバックを用意する
-    extraction_cb = ModelExtractionCallback()
-    callbacks = [
-        extraction_cb,
-    ]
+    # 交差検証スタート
+    for i, (tr_idx, va_idx) in enumerate(kf.split(X)):
+        X_train, y_train, X_val, y_val = target_encoding(X, y, tr_idx, va_idx)
 
-    lgb.cv(params, train_data, num_boost_round=5000, nfold=5, early_stopping_rounds=200, 
-                   verbose_eval=200, callbacks=callbacks, eval_train_metric=True)
+        train_data = lgb.Dataset(X_train, y_train)
+        val_data = lgb.Dataset(X_val, y_val)
 
-    # コールバックのオブジェクトから学習済みモデルを取り出す
-    proxy = extraction_cb.boosters_proxy
-    # boosters = extraction_cb.raw_boosters
-    best_iteration = extraction_cb.best_iteration
-    print(proxy)
-    # _feature_importance(proxy, X)
+        # 学習済みモデルを取り出すためのコールバックを用意する
+        # extraction_cb = ModelExtractionCallback()
+        # callbacks = [extraction_cb,]
+        model = lgb.train(params, train_set=train_data, num_boost_round=5000, valid_sets=val_data,
+                          early_stopping_rounds=200, verbose_eval=200)
 
-    # 各モデルの推論結果を Averaging する場合
-    y_pred_proba_list = proxy.predict(X_test, num_iteration=best_iteration)
-    y_pred = np.array(y_pred_proba_list).mean(axis=0)
+        # コールバックのオブジェクトから学習済みモデルを取り出す
+        # proxy = extraction_cb.boosters_proxy
+        # boosters = extraction_cb.raw_boosters
+        # best_iteration = extraction_cb.best_iteration
+        # _feature_importance(proxy, X)
+
+        # 各モデルの推論結果を Averaging する場合
+        # y_pred_proba_list = proxy.predict(X_test, num_iteration=best_iteration)
+        # y_pred_proba_avg = np.array(y_pred_proba_list).mean(axis=0)
+        # y_pred = np.zeros(X_test.shape[0], dtype='float32')
+        # y_pred = np.argmax(y_pred_proba_avg, axis=1)
+
+        y_val_pred = model.predict(X_val)
+        y_pred_list = []
+        y_pred_list.append(y_val_pred)
+        val_score = np.sqrt(mean_squared_error(y_val, y_val_pred))
+        print("valid_score {}: {}".format(i+1, val_score))
+
+    y_val_pred_mean = np.array(y_pred_list).mean(axis=0)
+    mean_val_score = np.sqrt(mean_squared_error(y_val, y_val_pred_mean))
+
+    print("mean_score: ", mean_val_score)
     # y_pred = np.zeros(X_test.shape[0], dtype='float32')
-    # y_pred = np.argmax(y_pred_proba_avg, axis=1)
-
-    # y_val_pred = model.predict(X_val)
-    # train_score = np.sqrt(mean_squared_error(y_train, y_train_pred))
     # val_score = np.sqrt(mean_squared_error(y_val, y_val_pred))
+    
+    # trainデータを用いて,testデータをtarget encoding
+    le_columns = ["Place"]
+    for c in le_columns:
+        # 学習データ全体で各カテゴリにおけるtargetの平均を計算
+        data_tmp = pd.DataFrame({c: X_train[c], "target": y_train})
+        target_mean = data_tmp.groupby(c)["target"].mean()
+        X_test.loc[:, c] = X_test[c].map(target_mean)
 
-   
-    # y_pred = model.predict(X_test)
+    y_pred = np.zeros(X_test.shape[0], dtype='float32')
+    y_pred = model.predict(X_test)
     submit['target'] = y_pred
     submit.to_csv('./output/submit{}.csv'.format(date), header=False, index=False)
-
 
 if __name__ == "__main__":
     main()
