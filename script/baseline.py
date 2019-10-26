@@ -1,26 +1,18 @@
-import pandas as pd
-import pandas_profiling as pdp
-import numpy as np
-import seaborn as sns
-import matplotlib
-import requests
-import time
-from bs4 import BeautifulSoup
-from tqdm import tqdm
-import datetime
-import matplotlib.pyplot as plt
-import lightgbm as lgb
-from sklearn.metrics import mean_squared_error, roc_auc_score
-from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split, KFold
-from sklearn.ensemble import RandomForestRegressor
 import os
+import time
+import datetime
+import pickle
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import pandas_profiling as pdp
+import matplotlib.pyplot as plt
 
-print(os.getcwd())
-# import japanize_matplotlib
-# import geopy
-# from geopy.geocoders import Nominatim
-# from geopy.extra.rate_limiter import RateLimiter
+import lightgbm as lgb
+from sklearn.metrics import mean_squared_error
+from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split, KFold
 
 date = datetime.datetime.today().strftime("%Y%m%d_%H%M%S")
 train = pd.read_csv("./input/train.csv")
@@ -95,40 +87,18 @@ class ModelExtractionCallback(object):
 def place_feature(df):
     place = df["Place"].str.replace("東京都", "").str.split("区")
     place = pd.DataFrame(place.str, index=["Place", "Place2"]).T
-    place.drop("Place2", axis=1, inplace=True)
-    # place = place["Place"].str.replace("港", "0")
-    # place = place.str.replace("千代田", "1")
-    # place = place.str.replace("中央", "2")
-    # place = place.str.replace("渋谷", "3")
-    # place = place.str.replace("目黒", "4")
+    
+    #  ~丁目がつくか否か
+    place["Place_tyome"] = place["Place2"].str.contains("丁目")
 
-    # place = place.str.replace("新宿", "5")
-    # place = place.str.replace("文京", "6")
-    # place = place.str.replace("台東", "7")
-    # place = place.str.replace("江東", "8")
-    # place = place.str.replace("品川", "9")
-
-    # place = place.str.replace("荒川", "10")
-    # place = place.str.replace("墨田", "11")
-    # place = place.str.replace("世田谷", "12")
-    # place = place.str.replace("豊島", "13")
-    # place = place.str.replace("大田", "14")
-
-    # place = place.str.replace("中野", "15")
-    # place = place.str.replace("北", "16")
-    # place = place.str.replace("杉並", "17")
-    # place = place.str.replace("練馬", "18")
-    # place = place.str.replace("板橋", "19")
-
-    # place = place.str.replace("江戸川", "20")
-    # place = place.str.replace("足立", "21")
-    # place = place.str.replace("葛飾", "22")
-    # place = pd.DataFrame(place).astype(int)
-    # place.columns = ["Place"]
+    #  ~町がつくか否か
+    place["Place_machi"] = place["Place2"].str.contains("町")
 
     # frequency encording(区名の出現頻度を特徴量とする)
     freq = place["Place"].value_counts()
     place["Freq_place"] = place["Place"].map(freq)
+
+    place.drop("Place2", axis=1, inplace=True)
     return place
 
 
@@ -136,6 +106,7 @@ def place_feature(df):
 def room_feature(df):
     room = pd.DataFrame(df["Room"].str[0]).astype(int)  # strの１文字目（部屋数）を取得
     room.columns = ["N_room"]
+    room["Area_per_nroom"] = df["Area"].str.replace('m2', '').astype(float).round() / room["N_room"]
     temp_room = df["Room"].str[1:].replace("R", "")
     room["L_room"] = temp_room.str.contains("L")
     room["D_room"] = temp_room.str.contains("D")
@@ -166,19 +137,26 @@ def floor_feature(df):
     floor["RatioFloor"] = ((live_floor / max_floor) * 100).round()
     return floor
 
+# アクセス
+def access_feature(df):
+    # 最寄りのアクセスの個数
+    access = df["Access"].str.split("分", expand=True)
+    access["N_access"] = access.count(axis=1)
+    return access["N_access"]
+
 
 # 方角
-def angle_feature(df):
-    angle = df["Angle"].str.replace("北西", "1")
-    angle = angle.str.replace("北東", "1")
-    angle = angle.str.replace("南西", "3")
-    angle = angle.str.replace("南東", "3")
-    angle = angle.str.replace("北", "0")
-    angle = angle.str.replace("西", "2")
-    angle = angle.str.replace("東", "2")
-    angle = angle.str.replace("南", "4")
-    angle = pd.DataFrame(angle.fillna("2"), columns=["Angle"]).astype(int)
-    return angle
+# def angle_feature(df):
+#     angle = df["Angle"].str.replace("北西", "1")
+#     angle = angle.str.replace("北東", "1")
+#     angle = angle.str.replace("南西", "3")
+#     angle = angle.str.replace("南東", "3")
+#     angle = angle.str.replace("北", "0")
+#     angle = angle.str.replace("西", "2")
+#     angle = angle.str.replace("東", "2")
+#     angle = angle.str.replace("南", "4")
+#     angle = pd.DataFrame(angle.fillna("2"), columns=["Angle"]).astype(int)
+#     return angle
 
 
 # def material_feature(df):
@@ -210,26 +188,48 @@ def passed_feature(df):
     return passed
 
 
+# 近辺の建物
+def building_feature(df):
+    building = df["Building"].str.split("m", expand=True)
+    building["N_building"] = building.count(axis=1)
+    return building["N_building"]
+
+# 面積
+def area_feature(df, floor_df):
+    area = df["Area"].str.replace('m2', '').astype(float).round()
+    area = pd.DataFrame(area)
+    area["Place"] = df["Place"].str.replace("東京都", "").str.split("区", expand=True)[0]
+    area_mean = area.groupby("Place")["Area"].mean()
+    area["Area_mean_place"] = area["Place"].map(area_mean)
+    area["Area_mean_minus"] = area["Area"] - area["Area_mean_place"]
+    area["Area_mean_division"] = area["Area"] / area["Area_mean_place"]
+    area.drop("Place", axis=1, inplace=True)
+    area["Volume"] = area["Area"] * floor_df["MaxFloor"]
+    return area
+
+
 def feature_concat(df, data):
     place = place_feature(df)
+    access = access_feature(df)
     room = room_feature(df)
     passed = passed_feature(df)
-    angle = angle_feature(df)
-    area = df["Area"].str.replace('m2', '').astype(float).round()
+    angle = df["Angle"].fillna("欠損値")  # 欠損値を１つのカテゴリとして処理
     floor = floor_feature(df)
-    material = df["Material"].str.replace("鉄筋ブロック", "ブロック")
+    area = area_feature(df, floor)
     bath = pd.DataFrame(df["Bath"].str.split("／", expand=True).nunique(axis=1), columns=["Bath"])
     kitchen = pd.DataFrame(df["Kitchen"].str.split("／", expand=True).nunique(axis=1), columns=["Kitchen"])
     facility = pd.DataFrame(df["Facility"].str.split("／", expand=True).nunique(axis=1), columns=["Facility"])
     internet = pd.DataFrame(df["Internet"].str.split("／", expand=True).nunique(axis=1), columns=["Internet"])
+    building = building_feature(df)
+    material = df["Material"].str.replace("鉄筋ブロック", "ブロック")
 
     if data == "train":
         target = df['target']
-        new_df = pd.concat([target, place, room, passed, angle, area, floor, material,
-                            bath, kitchen, facility, internet], axis=1)
+        new_df = pd.concat([target, place, access, room, passed, angle, area, floor,
+                            bath, kitchen, facility, internet, building, material], axis=1)
     else:
-        new_df = pd.concat([place, room, passed, angle, area, floor, material,
-                            bath, kitchen, facility, internet], axis=1)
+        new_df = pd.concat([place, access, room, passed, angle, area, floor,
+                            bath, kitchen, facility, internet, building, material], axis=1)
     return new_df
 
 
@@ -238,13 +238,14 @@ def data_organize(train, test):
     test_df = feature_concat(test, data="test")
 
     # カテゴリ変数 for label encording
-    le_columns = ["Place", "Material", "Angle"]
+    le_columns = ["Place", "Angle", "Material"]
     for c in le_columns:
         le = LabelEncoder()
         le.fit(train_df[c])
         train_df[c] = le.transform(train_df[c])
         test_df[c] = le.transform(test_df[c])
 
+    train_df["Tika"] = train_df["target"] / train_df["Area"]
     X = train_df.drop(['target'], axis=1)
     y = train_df['target']
     X_test = test_df
@@ -256,9 +257,10 @@ def _feature_importance(model, X):
     feature_importances['feature'] = X.columns
     feature_importances['importance'] = model.feature_importance()
     feature_importances = feature_importances.sort_values(by='importance', ascending=False)
-    plt.figure(figsize=(8, 8))
+    plt.figure(figsize=(10, 10))
     sns.barplot(data=feature_importances.head(50), x='importance', y='feature')
     plt.show()
+
 
 def target_encoding(X, y, tr_idx, va_idx):
     # 学習データからバリデーションデータを分ける
@@ -266,30 +268,49 @@ def target_encoding(X, y, tr_idx, va_idx):
     tr_y, va_y = y.iloc[tr_idx], y.iloc[va_idx]
 
     # trainデータを用いて,valデータをtarget encoding
-    le_columns = ["Place"]
+    le_columns = ["Place", "Angle", "Material"]
     for c in le_columns:
         # 学習データ全体で各カテゴリにおけるtargetの平均を計算
-        data_tmp = pd.DataFrame({c: tr_x[c], "target": tr_y})
-        target_mean = data_tmp.groupby(c)["target"].mean()
-        va_x.loc[:, c] = va_x[c].map(target_mean)
+        data_tmp1 = pd.DataFrame({c: tr_x[c], "target": tr_y})  # targetでtarget encoding
+        data_tmp2 = pd.DataFrame({c: tr_x[c], "Tika": tr_x["Tika"]})  # tikaでtarget encoding
+        target_mean = data_tmp1.groupby(c)["target"].mean()
+        tika_mean = data_tmp2.groupby(c)["Tika"].mean()
+        va_x.loc[:, c + "_te"] = va_x[c].map(target_mean)
+        va_x.loc[:, c + "_tika_te"] = va_x[c].map(tika_mean)
 
         # trainデータの変換後の値を格納する配列を準備
-        tmp = np.repeat(np.nan, tr_x.shape[0])
+        tmp1 = np.repeat(np.nan, tr_x.shape[0])
+        tmp2 = np.repeat(np.nan, tr_x.shape[0])
         kf_encoding = KFold(n_splits=5, shuffle=True, random_state=0) 
         
         # trainデータを用いて,残りのtrainデータをtarget encoding
         for idx_1, idx_2 in kf_encoding.split(tr_x):
             # out-of-foldで各カテゴリにおける目的変数の平均を計算
-            target_mean = data_tmp.iloc[idx_1].groupby(c)["target"].mean()
+            target_mean = data_tmp1.iloc[idx_1].groupby(c)["target"].mean()
+            tika_mean = data_tmp2.iloc[idx_1].groupby(c)["Tika"].mean()
             # 変換後の値を一時配列に格納
-            tmp[idx_2] = tr_x[c].iloc[idx_2].map(target_mean)
-        
-        tr_x.loc[:, c] = tmp
+            tmp1[idx_2] = tr_x[c].iloc[idx_2].map(target_mean)
+            tmp2[idx_2] = tr_x[c].iloc[idx_2].map(tika_mean)
+        tr_x.loc[:, c + "_te"] = tmp1
+        tr_x.loc[:, c + "_tika_te"] = tmp2
+    tr_x.drop("Tika", axis=1, inplace=True)
+    va_x.drop("Tika", axis=1, inplace=True)
     return tr_x, tr_y, va_x, va_y
 
 
 def main():
     X, y, X_test = data_organize(train, test)
+    
+    # 学習データからテストデータ用にtarget eoncoding
+    le_columns = ["Place", "Angle", "Material"]
+    for c in le_columns:
+        data_tmp1 = pd.DataFrame({c: X[c], "target": y})  # targetでtarget encoding
+        data_tmp2 = pd.DataFrame({c: X[c], "Tika": X["Tika"]})  # tikaでtarget encoding
+        target_mean = data_tmp1.groupby(c)["target"].mean()
+        tika_mean = data_tmp2.groupby(c)["Tika"].mean()
+        X_test[c + "_te"] = X_test[c].map(target_mean)
+        X_test[c + "_tika_te"] = X_test[c].map(tika_mean)
+
     kf = KFold(n_splits=5, shuffle=True, random_state=0)
     params = {
         'objective': 'regression',
@@ -305,7 +326,9 @@ def main():
         'verbose': 0,
         'seed': 0,
     }
-
+    
+    scores = []
+    y_preds = []
     # 交差検証スタート
     for i, (tr_idx, va_idx) in enumerate(kf.split(X)):
         X_train, y_train, X_val, y_val = target_encoding(X, y, tr_idx, va_idx)
@@ -323,39 +346,42 @@ def main():
         # proxy = extraction_cb.boosters_proxy
         # boosters = extraction_cb.raw_boosters
         # best_iteration = extraction_cb.best_iteration
-        # _feature_importance(proxy, X)
-
-        # 各モデルの推論結果を Averaging する場合
-        # y_pred_proba_list = proxy.predict(X_test, num_iteration=best_iteration)
-        # y_pred_proba_avg = np.array(y_pred_proba_list).mean(axis=0)
-        # y_pred = np.zeros(X_test.shape[0], dtype='float32')
-        # y_pred = np.argmax(y_pred_proba_avg, axis=1)
+        if i == 0:
+            _feature_importance(model, X_train)
+        
+        # modelの保存
+        # model_name = "model_fold{}.sav".format(i+1)
+        # pickle.dump(model, open(model_name, "wb"))
 
         y_val_pred = model.predict(X_val)
-        y_pred_list = []
-        y_pred_list.append(y_val_pred)
         val_score = np.sqrt(mean_squared_error(y_val, y_val_pred))
+        scores.append(val_score)
         print("valid_score {}: {}".format(i+1, val_score))
 
-    y_val_pred_mean = np.array(y_pred_list).mean(axis=0)
-    mean_val_score = np.sqrt(mean_squared_error(y_val, y_val_pred_mean))
+        y_preds.append(model.predict(X_test))
 
-    print("mean_score: ", mean_val_score)
-    # y_pred = np.zeros(X_test.shape[0], dtype='float32')
-    # val_score = np.sqrt(mean_squared_error(y_val, y_val_pred))
+
+    score = np.mean(scores)
+    print("mean_score: ", score)
     
-    # trainデータを用いて,testデータをtarget encoding
-    le_columns = ["Place"]
-    for c in le_columns:
-        # 学習データ全体で各カテゴリにおけるtargetの平均を計算
-        data_tmp = pd.DataFrame({c: X_train[c], "target": y_train})
-        target_mean = data_tmp.groupby(c)["target"].mean()
-        X_test.loc[:, c] = X_test[c].map(target_mean)
+    y_pred = np.mean(y_preds, axis=0)
 
-    y_pred = np.zeros(X_test.shape[0], dtype='float32')
-    y_pred = model.predict(X_test)
+    
+    # # trainデータを用いて,testデータをtarget encoding
+    # le_columns = ["Place", "Angle", "Material"]
+    # for c in le_columns:
+    #     # 学習データ全体で各カテゴリにおけるtargetの平均を計算
+    #     data_tmp1 = pd.DataFrame({c: X_train[c], "target": y_train})
+    #     data_tmp2 = pd.DataFrame({c: X_train[c], "Tika": tika_train})
+    #     target_mean = data_tmp1.groupby(c)["target"].mean()
+    #     tika_mean = data_tmp2.groupby(c)["Tika"].mean()
+    #     X_test.loc[c + "_te"] = X_test[c].map(target_mean)
+    #     X_test.loc[c + "_tika_te"] = X_test[c].map(tika_mean)
+    
+
     submit['target'] = y_pred
     submit.to_csv('./output/submit{}.csv'.format(date), header=False, index=False)
-
+    # print("train: ", X_train.columns)
+    # print("test: ", X_test.columns)
 if __name__ == "__main__":
     main()

@@ -23,8 +23,8 @@ test = test.rename(columns={'契約期間': 'Contract', '間取り': 'Room', '�
                             '所在階': 'Floor', 'アクセス': 'Access', '方角': 'Angle'})
 
 # エラー回避用の補完
-train['Place'].mask(train['Place'].str.endswith("丁目"), train['Place']+"1", inplace=True)
-# test['Place'].mask(test['Place'].str.endswith("丁目"), test['Place']+"1", inplace=True)
+# train['Place'].mask(train['Place'].str.endswith("丁目"), train['Place']+"1", inplace=True)
+test['Place'].mask(test['Place'].str.endswith("丁目"), test['Place']+"1", inplace=True)
 
 URL = 'http://www.geocoding.jp/api/'
 
@@ -62,12 +62,12 @@ def coordinates(addresses, interval=10, progress=True):
     return coordinates
 
 n_data = 1000
-for i in range(int(train.shape[0]/n_data)+1-15):
+for i in range(int(test.shape[0]/n_data)+1-17):
     # csvで保存
-    train_geocode_list = coordinates(train["Place"].values[(i+15)*n_data:(i+16)*n_data])
-    train_geocode_df = pd.DataFrame(train_geocode_list)
-    train_geocode_df.to_csv("./add_input/train_geocode{}-{}.csv".format((i+15)*n_data, (i+16)*n_data))
+    # train_geocode_list = coordinates(train["Place"].values[i*n_data:(i+1)*n_data])
+    # train_geocode_df = pd.DataFrame(train_geocode_list)
+    # train_geocode_df.to_csv("./add_input/train_geocode{}-{}.csv".format(i*n_data, (i+1)*n_data))
 
-    # test_geocode_list = coordinates(test["Place"].values)
-    # test_geocode_df = pd.DataFrame(test_geocode_list)
-    # test_geocode_df.to_csv("./add_input/test_geocode.csv")
+    test_geocode_list = coordinates(test["Place"].values[(i+17)*n_data:(i+1+17)*n_data])
+    test_geocode_df = pd.DataFrame(test_geocode_list)
+    test_geocode_df.to_csv("./add_input/test_geocode{}-{}.csv".format((i+17)*n_data, (i+1+17)*n_data))
