@@ -62,11 +62,12 @@ def coordinates(addresses, interval=10, progress=True):
     return coordinates
 
 n_data = 1000
-for i in range(int(train.shape[0]/n_data)+1-15):
+num = 24
+for i in range(int(train.shape[0]/n_data)+1-num):
     # csvで保存
-    train_geocode_list = coordinates(train["Place"].values[(i+15)*n_data:(i+16)*n_data])
+    train_geocode_list = coordinates(train["Place"].values[(i+num)*n_data:(i+1+num)*n_data])
     train_geocode_df = pd.DataFrame(train_geocode_list)
-    train_geocode_df.to_csv("./add_input/train_geocode{}-{}.csv".format((i+15)*n_data, (i+16)*n_data))
+    train_geocode_df.to_csv("./add_input/train_geocode{}-{}.csv".format((i+num)*n_data, (i+1+num)*n_data))
 
     # test_geocode_list = coordinates(test["Place"].values)
     # test_geocode_df = pd.DataFrame(test_geocode_list)
