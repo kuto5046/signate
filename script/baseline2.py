@@ -428,7 +428,59 @@ def _feature_importance(model, X):
     plt.savefig("./importance/{}.jpeg".format(date))
     plt.show()
 
+def stacking(X, y, X_test):
+    preds_val = []
+    preds_test = []
+    va_idxes = []
+    params = {
+        'objective': "regression",
+        'num_leaves': 4, # 255
+        'max_depth': -1,
+        'learning_rate': 0.01,
+        'n_estimators': 100000,
+        'min_child_samples': 20,
+        'subsample': 0.75,
+        'subsample_freq': 5, 
+        'bagging_seed': 7,
+        'colsample_bytree': 0.2,
+        'feature_fraction_seed': 7,
+        'max_bin': 200,
+        'random_state': 0,
+        'importance_type': "gain",
+    }
+    kf = KFold(n_splits=5, shuffle=True, random_state=0)
 
+    # 交差検証スタート
+    for i, (tr_idx, va_idx) in enumerate(kf.split(X)):
+        X_train, X_val = X.iloc[tr_idx], X.iloc[va_idx]
+        y_train, y_val = y.iloc[tr_idx], y.iloc[va_idx]
+
+        model = lgb.LGBMRegressor(**params)
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], early_stopping_rounds=200, verbose=-1)
+
+        # スタッキング用のvalの予測値
+        y_val_pred = model.predict(X_val)
+        preds_val.append(y_val_pred)
+
+        # スタッキング用のtestの予測値
+        y_test_pred = model.predict(X_test)
+        preds_test.append(y_test_pred)
+        va_idxes.append(va_idx)
+        print("Stacking No.{}: Finish".format(i))
+
+    # valに対する予測値を連結して、その後元の順序に並べ直す
+    va_idxes = np.concatenate(va_idxes)
+    preds_val = np.concatenate(preds_val, axis=0)
+    order = np.argsort(va_idxes)
+    pred_train = preds_val[order]
+
+    # テストデータに対する予測値の平均をとる
+    preds_test = np.mean(preds_test, axis=0)
+    X["Stacking"] = pred_train
+    X_test["Stacking"] = preds_test
+    return pred_train, preds_test
+
+    
 def main():
     categories = ["Place", "Angle", "Material", "First_line", "Cluster50", "Cluster100", "Cluster500", "Cluster1000"]
     categories2 = ["Place", "Angle", "Material", "First_line"]
@@ -437,7 +489,7 @@ def main():
 
     X, y, X_test = label_encoding(train2, test2, categories2)
     
-    # 学習データからテストデータ用にtarget eoncoding
+    # 学習データからテストデータ用にtarget encoding
     for c in categories:
         data_tmp1 = pd.DataFrame({c: X[c], "target": y})  # targetでtarget encoding
         data_tmp2 = pd.DataFrame({c: X[c], "Tika": X["Tika"]})  # tikaでtarget encoding
@@ -448,6 +500,9 @@ def main():
         X_test[c + "_te"] = X_test[c].map(target_mean)
         X_test[c + "_tika_te"] = X_test[c].map(tika_mean)
         X_test[c + "_tika2_te"] = X_test[c].map(tika2_mean)
+    
+    # スタッキングで特徴量を追加
+    X, X_test = stacking(X, y, X_test)
 
     kf = KFold(n_splits=5, shuffle=True, random_state=0)
     params = {
@@ -457,10 +512,10 @@ def main():
         'learning_rate': 0.01,
         'n_estimators': 100000,
         'min_child_samples': 20,
-        'bagging_fraction': 0.75,
-        'bagging_freq': 5, 
+        'subsample': 0.75,
+        'subsample_freq': 5, 
         'bagging_seed': 7,
-        'feature_fraction': 0.2,
+        'colsample_bytree': 0.2,
         'feature_fraction_seed': 7,
         'max_bin': 200,
         'random_state': 0,
@@ -468,7 +523,8 @@ def main():
     }
 
     scores = []
-    y_preds = []
+    preds = []
+
     # 交差検証スタート
     for i, (tr_idx, va_idx) in enumerate(kf.split(X)):
         X_train, y_train, X_val, y_val = target_encoding(X, y, tr_idx, va_idx, categories)
@@ -487,12 +543,13 @@ def main():
         scores.append(val_score)
         print("valid_score {}: {}".format(i+1, val_score))
 
-        y_preds.append(model.predict(X_test))
+        y_test_pred = model.predict(X_test)
+        preds.append(y_test_pred)
 
     score = np.mean(scores)
     print("mean_score: ", score)
     
-    y_pred = np.mean(y_preds, axis=0)
+    y_pred = np.mean(preds, axis=0)
 
     submit['target'] = y_pred
     submit.to_csv('./output/submit{}.csv'.format(date), header=False, index=False)
