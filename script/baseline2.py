@@ -9,6 +9,7 @@ import pandas_profiling as pdp
 import matplotlib.pyplot as plt
 
 import lightgbm as lgb
+from sklearn.linear_model import LinearRegression
 from sklearn.feature_selection import RFE
 from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import LabelEncoder
@@ -428,36 +429,19 @@ def _feature_importance(model, X):
     plt.savefig("./importance/{}.jpeg".format(date))
     plt.show()
 
-def stacking(X, y, X_test):
+def stacking(model, X, y, X_test, categories):
     preds_val = []
     preds_test = []
     va_idxes = []
-    params = {
-        'objective': "regression",
-        'num_leaves': 4, # 255
-        'max_depth': -1,
-        'learning_rate': 0.01,
-        'n_estimators': 100000,
-        'min_child_samples': 20,
-        'subsample': 0.75,
-        'subsample_freq': 5, 
-        'bagging_seed': 7,
-        'colsample_bytree': 0.2,
-        'feature_fraction_seed': 7,
-        'max_bin': 200,
-        'random_state': 0,
-        'importance_type': "gain",
-    }
     kf = KFold(n_splits=5, shuffle=True, random_state=0)
 
     # 交差検証スタート
     for i, (tr_idx, va_idx) in enumerate(kf.split(X)):
-        X_train, X_val = X.iloc[tr_idx], X.iloc[va_idx]
-        y_train, y_val = y.iloc[tr_idx], y.iloc[va_idx]
-
-        model = lgb.LGBMRegressor(**params)
+        # X_train, X_val = X.iloc[tr_idx], X.iloc[va_idx]
+        # y_train, y_val = y.iloc[tr_idx], y.iloc[va_idx]
+        X_train, y_train, X_val, y_val = target_encoding(X, y, tr_idx, va_idx, categories)
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)], early_stopping_rounds=200, verbose=-1)
-
+        # model.fit(X_train, y_train)
         # スタッキング用のvalの予測値
         y_val_pred = model.predict(X_val)
         preds_val.append(y_val_pred)
@@ -467,6 +451,7 @@ def stacking(X, y, X_test):
         preds_test.append(y_test_pred)
         va_idxes.append(va_idx)
         print("Stacking No.{}: Finish".format(i))
+        print("val score: ", np.sqrt(mean_squared_error(y_val, y_val_pred)))
 
     # valに対する予測値を連結して、その後元の順序に並べ直す
     va_idxes = np.concatenate(va_idxes)
@@ -478,8 +463,43 @@ def stacking(X, y, X_test):
     preds_test = np.mean(preds_test, axis=0)
     X["Stacking"] = pred_train
     X_test["Stacking"] = preds_test
-    return pred_train, preds_test
+    return X, X_test
 
+
+def stacking2(model, X, y, X_test):
+    preds_val = []
+    preds_test = []
+    va_idxes = []
+    kf = KFold(n_splits=5, shuffle=True, random_state=0)
+
+    # 交差検証スタート
+    for i, (tr_idx, va_idx) in enumerate(kf.split(X)):
+        X_train, X_val = X.iloc[tr_idx], X.iloc[va_idx]
+        y_train, y_val = y.iloc[tr_idx], y.iloc[va_idx]
+        model.fit(X_train, y_train)
+
+        # スタッキング用のvalの予測値
+        y_val_pred = model.predict(X_val)
+        preds_val.append(y_val_pred)
+
+        # スタッキング用のtestの予測値
+        y_test_pred = model.predict(X_test)
+        preds_test.append(y_test_pred)
+        va_idxes.append(va_idx)
+        print("Stacking No.{}: Finish".format(i))
+        print("val score: ", np.sqrt(mean_squared_error(y_val, y_val_pred)))
+
+    # valに対する予測値を連結して、その後元の順序に並べ直す
+    va_idxes = np.concatenate(va_idxes)
+    preds_val = np.concatenate(preds_val, axis=0)
+    order = np.argsort(va_idxes)
+    pred_train = preds_val[order]
+
+    # テストデータに対する予測値の平均をとる
+    preds_test = np.mean(preds_test, axis=0)
+    # X["Stacking"] = pred_train
+    # X_test["Stacking"] = preds_test
+    return pred_train, preds_test
     
 def main():
     categories = ["Place", "Angle", "Material", "First_line", "Cluster50", "Cluster100", "Cluster500", "Cluster1000"]
@@ -502,58 +522,40 @@ def main():
         X_test[c + "_tika2_te"] = X_test[c].map(tika2_mean)
     
     # スタッキングで特徴量を追加
-    X, X_test = stacking(X, y, X_test)
-
-    kf = KFold(n_splits=5, shuffle=True, random_state=0)
+    # lightGBM
     params = {
-        'objective': "regression",
-        'num_leaves': 4, # 255
-        'max_depth': -1,
-        'learning_rate': 0.01,
-        'n_estimators': 100000,
-        'min_child_samples': 20,
-        'subsample': 0.75,
-        'subsample_freq': 5, 
-        'bagging_seed': 7,
-        'colsample_bytree': 0.2,
-        'feature_fraction_seed': 7,
-        'max_bin': 200,
-        'random_state': 0,
-        'importance_type': "gain",
+    'objective': "regression",
+    'num_leaves': 4, # 255
+    'max_depth': -1,
+    'learning_rate': 0.01,
+    'n_estimators': 100000,
+    'min_child_samples': 20,
+    'subsample': 0.75,
+    'subsample_freq': 5, 
+    'bagging_seed': 7,
+    'colsample_bytree': 0.2,
+    'feature_fraction_seed': 7,
+    'max_bin': 200,
+    'random_state': 0,
+    'importance_type': "gain",
     }
-
-    scores = []
-    preds = []
-
-    # 交差検証スタート
-    for i, (tr_idx, va_idx) in enumerate(kf.split(X)):
-        X_train, y_train, X_val, y_val = target_encoding(X, y, tr_idx, va_idx, categories)
-
-        # train_data = lgb.Dataset(X_train, y_train)
-        # val_data = lgb.Dataset(X_val, y_val)
-        
-        model = lgb.LGBMRegressor(**params)
-        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], early_stopping_rounds=200, verbose=-1)
-
-        # if i == 0:
-        #     _feature_importance(model, X_train)
-
-        y_val_pred = model.predict(X_val)
-        val_score = np.sqrt(mean_squared_error(y_val, y_val_pred))
-        scores.append(val_score)
-        print("valid_score {}: {}".format(i+1, val_score))
-
-        y_test_pred = model.predict(X_test)
-        preds.append(y_test_pred)
-
-    score = np.mean(scores)
-    print("mean_score: ", score)
+    model = lgb.LGBMRegressor(**params)
+    X, X_test = stacking(model, X, y, X_test, categories)
+    print("1st score: ", np.sqrt(mean_squared_error(y, X)))
     
-    y_pred = np.mean(preds, axis=0)
+    # 線形モデル
+    X2 = pd.DataFrame({"Stacking": X})
+    X_test2 = pd.DataFrame({"Stacking": X_test})
+    model2 = LinearRegression()
+    X2, X_test2 = stacking2(model2, X2, y, X_test2)
+    print("2nd score: ", np.sqrt(mean_squared_error(y, X2)))
 
-    submit['target'] = y_pred
+    # if i == 0:
+    #     _feature_importance(model, X_train)
+
+    submit['target'] = X_test2
     submit.to_csv('./output/submit{}.csv'.format(date), header=False, index=False)
-    print("train: ", len(X_train.columns))
+    print("train: ", len(X.columns))
     print("test: ", len(X_test.columns))
 
 
