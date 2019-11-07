@@ -461,9 +461,9 @@ def stacking(model, X, y, X_test, categories):
 
     # テストデータに対する予測値の平均をとる
     preds_test = np.mean(preds_test, axis=0)
-    X["Stacking"] = pred_train
-    X_test["Stacking"] = preds_test
-    return X, X_test
+    # X["Stacking"] = pred_train
+    # X_test["Stacking"] = preds_test
+    return pred_train, preds_test
 
 
 def stacking2(model, X, y, X_test):
@@ -476,7 +476,8 @@ def stacking2(model, X, y, X_test):
     for i, (tr_idx, va_idx) in enumerate(kf.split(X)):
         X_train, X_val = X.iloc[tr_idx], X.iloc[va_idx]
         y_train, y_val = y.iloc[tr_idx], y.iloc[va_idx]
-        model.fit(X_train, y_train)
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], early_stopping_rounds=200, verbose=-1)
+        # model.fit(X_train, y_train)
 
         # スタッキング用のvalの予測値
         y_val_pred = model.predict(X_val)
@@ -543,11 +544,10 @@ def main():
     X, X_test = stacking(model, X, y, X_test, categories)
     print("1st score: ", np.sqrt(mean_squared_error(y, X)))
     
-    # 線形モデル
-    X2 = pd.DataFrame({"Stacking": X})
-    X_test2 = pd.DataFrame({"Stacking": X_test})
-    model2 = LinearRegression()
-    X2, X_test2 = stacking2(model2, X2, y, X_test2)
+    X = pd.DataFrame({"Stacking": X})
+    X_test = pd.DataFrame({"Stacking": X_test})
+    model2 = lgb.LGBMRegressor(**params)
+    X2, X_test2 = stacking2(model2, X, y, X_test)
     print("2nd score: ", np.sqrt(mean_squared_error(y, X2)))
 
     # if i == 0:
